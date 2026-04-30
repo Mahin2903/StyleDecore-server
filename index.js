@@ -4,13 +4,39 @@ const app = express();
 const cors = require("cors");
 require("dotenv").config();
 const stripe = require("stripe")(process.env.STRIPE_SECRETKEY);
-
+const admin = require("firebase-admin");
+const serviceAccount = require("./styledecor-firebase-adminsdk.json");
 const port = process.env.PORT || 3000;
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.dppmf5f.mongodb.net/?appName=Cluster0`;
 
 app.use(cors());
 app.use(express.json());
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+// ✅ verifyToken — strips Bearer prefix correctly
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+
+  const idToken = authHeader.startsWith("Bearer ")
+    ? authHeader.split(" ")[1]
+    : authHeader;
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    req.decoded_email = decoded.email;
+  } catch (err) {
+    console.error("Token verification failed:", err.message);
+    return res.status(401).send({ message: "Unauthorized Access" });
+  }
+  next();
+};
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -22,7 +48,7 @@ const client = new MongoClient(uri, {
 
 const generateTrackingId = () => {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  let result = "SD-"; // SD for StyleDecor
+  let result = "SD-";
   for (let i = 0; i < 6; i++) {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
@@ -65,17 +91,9 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/services", async (req, res) => {
-      const { email } = req.query;
-      const query = {};
-      if (email) {
-        query.createdByEmail = email;
-      }
-      const result = await serviceCollections.find(query).toArray();
-      res.send(result);
-    });
-
-    app.get("/services/category-summary", async (req, res) => {
+    // ⚠️ NOTE: /services/category-summary MUST stay above /services/:id
+    // otherwise Express matches "category-summary" as the :id param
+    app.get("/services/category-summary", verifyToken, async (req, res) => {
       const result = await serviceCollections
         .aggregate([
           { $group: { _id: "$category", totalServices: { $sum: 1 } } },
@@ -85,7 +103,21 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/services/:id", async (req, res) => {
+    // ✅ verifyToken added — call via AxiosInstance on frontend
+    // ⚠️ If /services is used on a PUBLIC page (before login), remove verifyToken here
+    app.get("/services", verifyToken, async (req, res) => {
+      const { email } = req.query;
+      const query = {};
+      if (email) {
+        query.createdByEmail = email;
+      }
+      const result = await serviceCollections.find(query).toArray();
+      res.send(result);
+    });
+
+    // ✅ verifyToken added — call via AxiosInstance on frontend
+    // ⚠️ If /services/:id is used on a PUBLIC page (before login), remove verifyToken here
+    app.get("/services/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
         const service = { _id: new ObjectId(id) };
@@ -122,16 +154,18 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/user", async (req, res) => {
+    // ✅ verifyToken added
+    app.get("/user", verifyToken, async (req, res) => {
       const { email, status } = req.query;
       const query = {};
-      if (email) query.createdByEmail = email;
+      if (email) query.userEmail = email;
       if (status) query.status = status;
       const result = await UsersCollections.find(query).toArray();
       res.send(result);
     });
 
-    app.get("/user/:id", async (req, res) => {
+    // ✅ verifyToken added
+    app.get("/user/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
         const userId = { _id: new ObjectId(id) };
@@ -146,12 +180,13 @@ async function run() {
     // BOOKED SERVICES ROUTES
     // ==========================================
     app.post("/bookedservice", async (req, res) => {
-      const package = req.body;
-      const result = await BookedPackageCollections.insertOne(package);
+      const bookingData = req.body;
+      const result = await BookedPackageCollections.insertOne(bookingData);
       res.send(result);
     });
 
-    app.get("/bookedservice", async (req, res) => {
+    // ✅ verifyToken added
+    app.get("/bookedservice", verifyToken, async (req, res) => {
       const { email } = req.query;
       const query = {};
       if (email) query.userEmail = email;
@@ -159,7 +194,8 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/bookedservice/:id", async (req, res) => {
+    // ✅ verifyToken added
+    app.get("/bookedservice/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
         const result = await BookedPackageCollections.findOne({
@@ -173,15 +209,17 @@ async function run() {
 
     app.delete("/bookedservice/:id", async (req, res) => {
       const id = req.params.id;
-      const package = { _id: new ObjectId(id) };
-      const result = await BookedPackageCollections.deleteOne(package);
+      const bookingQuery = { _id: new ObjectId(id) };
+      const result = await BookedPackageCollections.deleteOne(bookingQuery);
       res.send(result);
     });
 
     // ==========================================
-    // 🆕 DECORATOR WORKFLOW ROUTES
+    // DECORATOR WORKFLOW ROUTES
     // ==========================================
-    app.get("/decorators", async (req, res) => {
+
+    // ✅ verifyToken added
+    app.get("/decorators", verifyToken, async (req, res) => {
       const query = { role: { $regex: /decorator/i }, status: "approved" };
       const result = await UsersCollections.find(query).toArray();
       res.send(result);
@@ -194,35 +232,31 @@ async function run() {
       const updateDoc = {
         $set: {
           status: "assigned",
-          decoratorEmail: decoratorEmail,
-          decoratorName: decoratorName,
+          decoratorEmail,
+          decoratorName,
           assignedAt: new Date(),
         },
       };
-      const result = await BookedPackageCollections.updateOne(
-        filter,
-        updateDoc,
-      );
+      const result = await BookedPackageCollections.updateOne(filter, updateDoc);
       res.send(result);
     });
 
-    app.get("/decorator/assignments", async (req, res) => {
+    // ✅ verifyToken added
+    app.get("/decorator/assignments", verifyToken, async (req, res) => {
       const { email } = req.query;
       if (!email) return res.send([]);
       const query = { decoratorEmail: email };
       const result = await BookedPackageCollections.find(query).toArray();
       res.send(result);
     });
-    app.get("/decorator/assignments/:id", async (req, res) => {
+
+    // ✅ verifyToken added
+    app.get("/decorator/assignments/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await BookedPackageCollections.findOne(query);
       res.send(result);
     });
-    // ==========================================
-    // ADD THIS ROUTE inside your run() function
-    // after the existing /decorator/assignments/:id GET route
-    // ==========================================
 
     app.patch("/decorator/assignments/:id", async (req, res) => {
       try {
@@ -231,20 +265,17 @@ async function run() {
         const filter = { _id: new ObjectId(id) };
         const updateDoc = {
           $set: {
-            workStatus: workStatus,
+            workStatus,
             lastUpdated: new Date(),
             ...(workStatus === "complete" && { completedAt: new Date() }),
           },
         };
-
-        // ✅ Use findOneAndUpdate to get the actual document back
         const result = await BookedPackageCollections.findOneAndUpdate(
           filter,
           updateDoc,
-          { returnDocument: "after" },
+          { returnDocument: "after" }
         );
-
-        res.send(result); // This now sends the full updated project object
+        res.send(result);
       } catch (error) {
         res.status(500).send({ error: "Failed to update" });
       }
@@ -253,42 +284,54 @@ async function run() {
     // ==========================================
     // PAYMENT ROUTES
     // ==========================================
-    app.get("/payments", async (req, res) => {
+    app.get("/payments", verifyToken, async (req, res) => {
       try {
         const { email } = req.query;
-        let query = {}; // 🛠️ FIXED: Added 'let' to prevent global variable leak
+        const query = {};
+
         if (email) {
+          if (email !== req.decoded_email) {
+            return res.status(403).send({ message: "Forbidden" });
+          }
           query.customer_email = email;
         }
+
         const result = await paymentCollection
           .find(query)
           .sort({ paidAt: -1 })
-          .toArray(); // 🛠️ FIXED: Added sorting by newest first
+          .toArray();
         res.send(result);
       } catch (error) {
         res.status(500).send({ error: "Failed to fetch payments" });
       }
     });
+
     app.post("/decoratorpayment", async (req, res) => {
       const paymentInfo = req.body;
       const result = await decoratorPaymentCollection.insertOne(paymentInfo);
       res.send(result);
     });
-    app.get("/decoratorpayment", async (req, res) => {
+
+    // ✅ verifyToken added
+    app.get("/decoratorpayment", verifyToken, async (req, res) => {
       const cursor = decoratorPaymentCollection.find();
       const result = await cursor.toArray();
       res.send(result);
     });
+
     app.patch("/decoratorpayment/:id", async (req, res) => {
       const { id } = req.params;
       const update = req.body;
       const result = await decoratorPaymentCollection.updateOne(
         { _id: new ObjectId(id) },
-        { $set: update },
+        { $set: update }
       );
       res.send(result);
     });
 
+    // ==========================================
+    // STRIPE ROUTES
+    // ==========================================
     app.post("/create-checkout-session", async (req, res) => {
       try {
         const info = req.body;
@@ -321,14 +364,12 @@ async function run() {
       }
     });
 
-    // 🛠️ FIXED: Safe Payment Success Route
     app.patch("/payment-success", async (req, res) => {
       try {
         const sessionId = req.query.session_id;
         const session = await stripe.checkout.sessions.retrieve(sessionId);
         const transactionId = session.payment_intent;
 
-        // 1. Check if already processed
         const paymentExist = await paymentCollection.findOne({ transactionId });
         if (paymentExist) {
           return res.send({
@@ -338,28 +379,25 @@ async function run() {
           });
         }
 
-        // 2. Process if Paid
         if (session.payment_status === "paid") {
           const trackingId = generateTrackingId();
           const id = session.metadata.packageId;
 
-          // Update Booking Status
           const updateResult = await BookedPackageCollections.updateOne(
             { _id: new ObjectId(id) },
-            { $set: { status: "paid", trackingId: trackingId } },
+            { $set: { status: "paid", trackingId } }
           );
 
-          // Save Payment Info
           const payment = {
             amount: session.amount_total / 100,
             currency: session.currency,
             customer_email: session.customer_email,
             bookingId: id,
             serviceName: session.metadata.service_name,
-            transactionId: transactionId,
+            transactionId,
             paymentStatus: "paid",
             paidAt: new Date(),
-            trackingId: trackingId,
+            trackingId,
           };
 
           const resultPayment = await paymentCollection.insertOne(payment);
@@ -367,31 +405,26 @@ async function run() {
           return res.send({
             success: true,
             modifyService: updateResult,
-            trackingId: trackingId,
+            trackingId,
             paymentInfo: resultPayment,
-            transactionId: transactionId,
+            transactionId,
           });
         }
 
-        // 3. Fallback for unpaid
         return res.send({ success: false, message: "Payment not completed" });
       } catch (error) {
         console.error("Payment Error:", error);
-        res
-          .status(500)
-          .send({ success: false, message: "Internal Server Error" });
+        res.status(500).send({ success: false, message: "Internal Server Error" });
       }
     });
 
-    // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!",
-    );
+    console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
-    // Ensures that the client will close when you finish/error
+    // Keep connection alive
   }
 }
+
 run().catch(console.dir);
 
 app.get("/", (req, res) => {

@@ -5,8 +5,12 @@ const cors = require("cors");
 require("dotenv").config();
 const stripe = require("stripe")(process.env.STRIPE_SECRETKEY);
 const admin = require("firebase-admin");
-const serviceAccount = require("./styledecor-firebase-adminsdk.json");
 const port = process.env.PORT || 3000;
+
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
+
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.dppmf5f.mongodb.net/?appName=Cluster0`;
 
@@ -418,7 +422,7 @@ async function run() {
       }
     });
 
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
     // Keep connection alive
@@ -431,6 +435,6 @@ app.get("/", (req, res) => {
   res.send("Style Decor Server is running smoothly");
 });
 
-app.listen(port, () => {
-  console.log(`Style Decor app listening on port ${port}`);
-});
+// app.listen(port, () => {
+//   console.log(`Style Decor app listening on port ${port}`);
+// });

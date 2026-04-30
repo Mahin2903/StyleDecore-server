@@ -127,7 +127,7 @@ app.get("/services/category-summary", verifyToken, async (req, res) => {
   res.send(result);
 });
 
-app.get("/services", verifyToken, async (req, res) => {
+app.get("/services", async (req, res) => {
   const { email } = req.query;
   const query = email ? { createdByEmail: email } : {};
   const result = await serviceCollections.find(query).toArray();
